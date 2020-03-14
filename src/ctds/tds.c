@@ -892,6 +892,11 @@ PyMODINIT_FUNC PyInit__tds(void)
 
     /***** Initialize DB-lib. *****/
 
+#if defined(CTDS_STATIC_LINK_FREETDS) && defined(_WIN32)
+    strncpy(freetds_version, dbversion(), sizeof(freetds_version) - 1);
+    freetds_version[sizeof(freetds_version) - 1] = '\0';
+    UNUSED(written);
+#else /* if defined(CTDS_STATIC_LINK_FREETDS) && defined(_WIN32) */
     /*
         FreeTDS version.
 
@@ -899,6 +904,7 @@ PyMODINIT_FUNC PyInit__tds(void)
         a proper version string from dbversion()
     */
     (void)ct_config(NULL, CS_GET, CS_VERSION, freetds_version, sizeof(freetds_version), &written);
+#endif /* else if defined(CTDS_STATIC_LINK_FREETDS) && defined(_WIN32) */
     if (0 != PyModule_AddStringConstant(module, "freetds_version", freetds_version)) FAIL_MODULE_INIT;
 
     if (FAIL == dbinit()) FAIL_MODULE_INIT;
