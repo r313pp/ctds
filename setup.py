@@ -101,9 +101,12 @@ else:
     if STATIC_LINK_FREETDS:
         LIBRARIES = [
             'db-lib',
-            'iconv',
+            # 'iconv',
             'replacements',
             'tds',
+            'tdsutils',
+            'libssl',
+            'libcrypto',
         ]
     if COVERAGE:
         EXTRA_COMPILE_ARGS.append('/Od')
