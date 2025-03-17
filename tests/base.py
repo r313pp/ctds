@@ -1,3 +1,4 @@
+import contextlib
 from decimal import Decimal
 import os
 import platform
@@ -77,6 +78,8 @@ class TestExternalDatabase(unittest.TestCase):
                 server = os.environ['HOSTNAME'] # pragma: nocover
             elif platform.system() == 'Windows':
                 server = socket.gethostname()
+        # MS SQL limits the server name to 15 characters.
+        server = server[:15]
         instance = self.get_option('instance')
         if instance is not None: # pragma: nocover
             server += '\\' + instance
@@ -180,3 +183,28 @@ class TestExternalDatabase(unittest.TestCase):
     def nvarchar_width(value):
         assert isinstance(value, unicode_)
         return sum(1 if ord(ch) < 0xFFFF else 2 for ch in value)
+
+    @staticmethod
+    def stored_procedure(cursor, sproc, body, args=()):
+
+        @contextlib.contextmanager
+        def stored_procedure_context():
+            cursor.execute(
+                '''
+                IF EXISTS (
+                    SELECT 1
+                    FROM sys.objects
+                    WHERE object_id = OBJECT_ID(N'{0}')
+                )
+                BEGIN
+                    DROP PROCEDURE {0};
+                END
+                '''.format(sproc)
+            )
+            cursor.execute('CREATE PROCEDURE {0}\n{1}'.format(sproc, body), args)
+            try:
+                yield
+            finally:
+                cursor.execute('DROP PROCEDURE {0}'.format(sproc))
+
+        return stored_procedure_context()

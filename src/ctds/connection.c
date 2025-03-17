@@ -22,6 +22,12 @@
 
 /* Platform-specific thread-local storage support. */
 #ifdef __clang__
+# if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8
+/* Ignore "'tp_print' has been explicitly marked deprecated here" */
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#  endif /* if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8 */
+
 #  include <pthread.h>
 
 #  define TLS_DECLARE(_name, _type, _destructor) \
@@ -320,7 +326,7 @@ static void raise_lasterror(PyObject* exception, const struct LastError* lasterr
     args = Py_BuildValue("(s)", message);
     if (args)
     {
-        PyObject* error = PyEval_CallObject(exception, args);
+        PyObject* error = PyObject_Call(exception, args, (PyObject*)NULL);
         if (error)
         {
             PyObject* db_error = NULL;
@@ -423,7 +429,7 @@ void Connection_raise_lasterror(struct Connection* connection)
             Categorize by severity for levels > 10, which are considered errors by SQL
             Server.
 
-            See https://technet.microsoft.com/en-us/library/ms164086(v=sql.105).aspx
+            See https://docs.microsoft.com/en-us/sql/relational-databases/errors-events/database-engine-error-severities?view=sql-server-ver15
             for descriptions of each severity level.
         */
         switch ((lastmsg) ? lastmsg->severity : 0)
@@ -598,10 +604,25 @@ int Connection_raise_lastwarning(struct Connection* connection)
     {
         if ((lastmsg->msgno > 0) && (!lastmsg->warned))
         {
-            lastmsg->warned = true;
+            /*
+                If the last message has a high enough severity, consider it an error instead
+                of an "informational" warning. Some of these errors aren't reported by
+                FreeTDS' DB-lib implementation, but seemingly should be. As a workaround,
+                assume any message of sufficient severity should be treated as an error
+                and not only when a DB-lib call returned non-success.
+            */
+            if (lastmsg->severity <= 10)
+            {
+                lastmsg->warned = true;
 
-            /* $TODO: figure out some way to include the other metadata in the warning */
-            error = PyErr_WarnEx(PyExc_tds_Warning, lastmsg->msgtext, 1);
+                /* $TODO: figure out some way to include the other metadata in the warning */
+                error = PyErr_WarnEx(PyExc_tds_Warning, lastmsg->msgtext, 1);
+            }
+            else
+            {
+                Connection_raise_lasterror(connection);
+                error = 1;
+            }
             if (error)
             {
                 break;
@@ -2100,7 +2121,7 @@ PyObject* Connection_create(const char* server, uint16_t port, const char* insta
                         break;
                     }
                 }
-                if (FAIL == DBSETLVERSION(connection->login, (BYTE)dbversion))
+                if ((DBVERSION_UNKNOWN == dbversion) || (FAIL == DBSETLVERSION(connection->login, (BYTE)dbversion)))
                 {
                     PyErr_Format(PyExc_tds_InterfaceError, "unsupported TDS version \"%s\"", tds_version);
                     break;
@@ -2244,7 +2265,6 @@ PyObject* Connection_create(const char* server, uint16_t port, const char* insta
     return (PyObject*)connection;
 }
 
-
 PyTypeObject ConnectionType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "ctds.Connection",             /* tp_name */
@@ -2302,7 +2322,9 @@ PyTypeObject ConnectionType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                          /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                          /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 

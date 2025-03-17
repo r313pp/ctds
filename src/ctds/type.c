@@ -20,6 +20,14 @@
 #  pragma GCC diagnostic ignored "-Wlong-long"
 #endif /* ifdef __GNUC__ */
 
+#ifdef __clang__
+# if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8
+/* Ignore "'tp_print' has been explicitly marked deprecated here" */
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#  endif /* if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8 */
+#endif /* ifdef __clang__ */
+
 
 #define _SqlType_init_base(_type, _value, _tdstype) \
     Py_INCREF((_value)); \
@@ -189,7 +197,9 @@ PyTypeObject SqlTypeType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                                     /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                                     /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 
@@ -210,7 +220,11 @@ int SqlType_Check(PyObject* o)
 #if PY_VERSION_HEX >= 0x03080000
 #  define _TP_VECTORCALL_OFFSET 0 /* tp_vectorcall_offset */
 #  define _TP_VECTORCALL NULL,
-#  define _TP_PRINT NULL,
+#  if PY_VERSION_HEX < 0x03090000
+#    define _TP_PRINT NULL,
+#  else /* if PY_VERSION_HEX < 0x03090000 */
+#    define _TP_PRINT /* NULL */
+#  endif /* else if PY_VERSION_HEX < 0x03090000 */
 #else
 #  define _TP_VECTORCALL_OFFSET NULL
 #  define _TP_VECTORCALL /* NULL */

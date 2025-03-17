@@ -12,7 +12,7 @@ import setuptools.dist
 
 # Version information is defined here and compiled into the extension.
 CTDS_MAJOR_VERSION = 1
-CTDS_MINOR_VERSION = 12
+CTDS_MINOR_VERSION = 14
 CTDS_PATCH_VERSION = 0
 
 
@@ -126,8 +126,8 @@ def splitdirs(name):
 
 def read(*names, **kwargs):
     with io.open(
-            os.path.join(os.path.dirname(__file__), *names),
-            encoding=kwargs.get('encoding', 'utf-8')
+        os.path.join(os.path.dirname(__file__), *names),
+        encoding=kwargs.get('encoding', 'utf-8')
     ) as file_:
         return file_.read()
 
@@ -175,6 +175,7 @@ setuptools.setup(
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: Implementation :: CPython',
         'Programming Language :: SQL',
         'Topic :: Database',

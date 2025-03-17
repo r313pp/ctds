@@ -26,6 +26,14 @@
 #  pragma GCC diagnostic ignored "-Wlong-long"
 #endif /* if defined(__GNUC__) && (__GNUC__ > 4) */
 
+#ifdef __clang__
+# if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8
+/* Ignore "'tp_print' has been explicitly marked deprecated here" */
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#  endif /* if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8 */
+#endif /* ifdef __clang__ */
+
 
 struct Column {
     DBCOL dbcol;
@@ -37,6 +45,12 @@ struct Column {
 struct ResultSetDescription {
 
     size_t _refs;
+
+    /*
+      The Python object representation of the description. This will be NULL
+       until requested the first time, then built and cached.
+    */
+    PyObject* _obj;
 
     /*
         Number of columns in the current resultset. This will be 0 if there
@@ -72,6 +86,7 @@ struct ResultSetDescription* ResultSetDescription_create(size_t ncolumns)
     if (description)
     {
         description->_refs = 1;
+        description->_obj = NULL;
         description->ncolumns = ncolumns;
         memset(description->columns, 0, sizeof(struct Column) * ncolumns);
     }
@@ -86,6 +101,7 @@ static void ResultSetDescription_decrement(struct ResultSetDescription* descript
     description->_refs--;
     if (0 == description->_refs)
     {
+        Py_XDECREF(description->_obj);
         tds_mem_free(description);
     }
 }
@@ -138,17 +154,30 @@ struct Cursor {
     }
 
 /*
-    Close a cursor's connection.
+    Clear a cursor's notion of the current resultset.
 
-    This method can be called multiple times on the same cursor.
+    @note This method does not consume remaining unread rows in the
+        resultset. That occurs in Cursor_next_resultset(), which
+        runs outside the GIL.
 */
-static void Cursor_close_connection(struct Cursor* cursor)
+static void Cursor_clear_resultset(struct Cursor* cursor)
 {
     if (cursor->description)
     {
         ResultSetDescription_decrement(cursor->description);
         cursor->description = NULL;
     }
+    cursor->rowsread = 0;
+}
+
+/*
+    Close a cursor's connection.
+
+    This method can be called multiple times on the same cursor.
+*/
+static void Cursor_close_connection(struct Cursor* cursor)
+{
+    Cursor_clear_resultset(cursor);
     Py_XDECREF(cursor->connection);
     cursor->connection = NULL;
 }
@@ -171,13 +200,14 @@ static int Cursor_next_resultset(struct Cursor* cursor, RETCODE* retcode)
     DBINT column;
     DBPROCESS* dbproc = Connection_DBPROCESS(cursor->connection);
 
-    if (cursor->description)
-    {
-        ResultSetDescription_decrement(cursor->description);
-        cursor->description = NULL;
-    }
+#if PY_VERSION_HEX >= 0x03040000
+    /* GIL should not be held when this function is called. */
+    assert(!PyGILState_Check());
+#endif /* if PY_VERSION_HEX >= 0x03040000 */
 
-    cursor->rowsread = 0;
+    /* Cursor_clear_resultset() must have already been called. */
+    assert(!cursor->description);
+    assert(0 == cursor->rowsread);
 
     /* Read any unprocessed rows from the database. */
     while (dbnextrow(dbproc) != NO_MORE_ROWS) {}
@@ -365,6 +395,7 @@ static int Description_init(void)
 #  endif /* if PY_VERSION_HEX >= 0x03040000 */
 
 #  define Description_New() PyStructSequence_New(&DescriptionType)
+#  define Description_GET_ITEM PyStructSequence_GET_ITEM
 #  define Description_SET_ITEM PyStructSequence_SET_ITEM
 
 }
@@ -372,6 +403,7 @@ static int Description_init(void)
 
 #  define Description_init() 0
 #  define Description_New() PyTuple_New(7)
+#  define Description_GET_ITEM PyTuple_GET_ITEM
 #  define Description_SET_ITEM PyTuple_SET_ITEM
 
 #endif /* else if PY_MAJOR_VERSION >= 3 */
@@ -469,10 +501,50 @@ static PyObject* create_column_description(const struct Column* column)
     return NULL;
 }
 
+static PyObject* ResultSetDescription_get_object(struct ResultSetDescription* description)
+{
+    if (!description->_obj)
+    {
+        PyObject* tuple = PyTuple_New((Py_ssize_t)description->ncolumns);
+        if (tuple)
+        {
+            size_t ix;
+            for (ix = 0; ix < description->ncolumns; ++ix)
+            {
+                PyObject* column = create_column_description(&description->columns[ix]);
+                if (column)
+                {
+                    PyTuple_SET_ITEM(tuple, (Py_ssize_t)ix, column); /* column reference stolen by PyTuple_SET_ITEM */
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            if (PyErr_Occurred())
+            {
+                Py_DECREF(tuple);
+                tuple = NULL;
+            }
+            else
+            {
+                description->_obj = tuple;
+                tuple = NULL; /* reference stolen above */
+            }
+        }
+        else
+        {
+            PyErr_NoMemory();
+        }
+    }
+
+    Py_XINCREF(description->_obj);
+    return description->_obj;
+}
+
 static PyObject* Cursor_description_get(PyObject* self, void* closure)
 {
-    PyObject* description = NULL;
-
     struct Cursor* cursor = (struct Cursor*)self;
 
     /*
@@ -484,34 +556,7 @@ static PyObject* Cursor_description_get(PyObject* self, void* closure)
         Py_RETURN_NONE;
     }
 
-    description = PyTuple_New((Py_ssize_t)cursor->description->ncolumns);
-    if (description)
-    {
-        size_t ix;
-        for (ix = 0; ix < cursor->description->ncolumns; ++ix)
-        {
-            PyObject* column = create_column_description(&cursor->description->columns[ix]);
-            if (column)
-            {
-                PyTuple_SET_ITEM(description, (Py_ssize_t)ix, column); /* column reference stolen by PyTuple_SET_ITEM */
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        if (PyErr_Occurred())
-        {
-            Py_DECREF(description);
-            description = NULL;
-        }
-    }
-    else
-    {
-        PyErr_NoMemory();
-    }
-    return description;
+    return ResultSetDescription_get_object(cursor->description);
 
     UNUSED(closure);
 }
@@ -1102,6 +1147,8 @@ static PyObject* Cursor_callproc_internal(struct Cursor* cursor, const char* pro
             break;
         }
 
+        Cursor_clear_resultset(cursor);
+
         Py_BEGIN_ALLOW_THREADS
 
             do
@@ -1587,6 +1634,8 @@ static int Cursor_execute_sql(struct Cursor* cursor, const char* sql)
             Connection_raise_lasterror(cursor->connection);
             break;
         }
+
+        Cursor_clear_resultset(cursor);
 
         Py_BEGIN_ALLOW_THREADS
 
@@ -2737,6 +2786,15 @@ static int Row_contains(PyObject* self, PyObject* value)
     return contains;
 }
 
+PyTypeObject* RowType_init(void)
+{
+    if (0 != PyType_Ready(&RowType))
+    {
+        return NULL;
+    }
+    return &RowType;
+}
+
 static PySequenceMethods s_Row_as_sequence = {
     Row_len,      /* sq_length */
     NULL,         /* sq_concat */
@@ -2788,9 +2846,97 @@ static PyMappingMethods s_Row_as_mapping = {
 
 static PyObject* Row_getattro(PyObject* self, PyObject* attr)
 {
-    return Row_lookup_column(self, attr, PyExc_AttributeError);
+    PyObject* value = Row_lookup_column(self, attr, NULL);
+    if (!value && !PyErr_Occurred())
+    {
+        value = PyObject_GenericGetAttr(self, attr);
+    }
+    return value;
 }
 
+static PyObject* Row_description_get(PyObject* self, void* closure)
+{
+    struct Row* row = (struct Row*)self;
+    return ResultSetDescription_get_object(row->description);
+
+    UNUSED(closure);
+}
+
+static PyGetSetDef Row_getset[] = {
+    /* name, get, set, doc, closure */
+    { (char*)"description", Row_description_get, NULL, (char*)s_Cursor_description_doc, NULL },
+    { NULL,                 NULL,                NULL, NULL,                            NULL }
+};
+
+static const char s_Row_dict_doc[] =
+    "dict()\n"
+    "\n"
+    "Get a dict representing the contents of the row. The keys will be column\n"
+    "names for columns that are named, and integer column numbers for those that\n"
+    "do not.\n"
+    "\n"
+    ":return: A dict representation of the row.\n";
+
+static PyObject* Row_dict(PyObject* self, PyObject* args)
+{
+    struct Row* row = (struct Row*)self;
+    PyObject* dict = PyDict_New();
+
+    if (dict)
+    {
+        PyObject* description = ResultSetDescription_get_object(row->description);
+        if (description)
+        {
+            size_t ncolumns = row->description->ncolumns;
+            size_t ix;
+            assert((Py_ssize_t)ncolumns == PyTuple_GET_SIZE(description));
+            for (ix = 0; ix < ncolumns; ++ix)
+            {
+                PyObject* value = row->values[ix];
+                PyObject* colname = Description_GET_ITEM(PyTuple_GET_ITEM(description, ix), 0);
+                if (0 == PyObject_IsTrue(colname))
+                {
+                    /* Use the column number as the key for unnamed columns. */
+                    PyObject* colnum = PyLong_FromSize_t(ix);
+                    if (!colnum)
+                    {
+                        break;
+                    }
+                    if (0 != PyDict_SetItem(dict, colnum, value))
+                    {
+                        Py_DECREF(colnum);
+                        break;
+                    }
+                    Py_DECREF(colnum);
+                }
+                else
+                {
+                    /* Use the column name as the key. */
+                    if (0 != PyDict_SetItem(dict, colname, value))
+                    {
+                        break;
+                    }
+                }
+            }
+            Py_DECREF(description);
+        }
+    }
+
+    if (PyErr_Occurred())
+    {
+        Py_XDECREF(dict);
+        dict = NULL;
+    }
+    return dict;
+
+    UNUSED(args);
+}
+
+static PyMethodDef Row_methods[] = {
+    /* ml_name, ml_meth, ml_flags, ml_doc */
+    { "dict", Row_dict, METH_NOARGS, s_Row_dict_doc },
+    { NULL,   NULL,     0,           NULL }
+};
 
 PyTypeObject RowType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -2824,9 +2970,9 @@ PyTypeObject RowType = {
     0,                                        /* tp_weaklistoffset */
     NULL,                                     /* tp_iter */
     NULL,                                     /* tp_iternext */
-    NULL,                                     /* tp_methods */
+    Row_methods,                              /* tp_methods */
     NULL,                                     /* tp_members */
-    NULL,                                     /* tp_getset */
+    Row_getset,                               /* tp_getset */
     NULL,                                     /* tp_base */
     NULL,                                     /* tp_dict */
     NULL,                                     /* tp_descr_get */
@@ -2849,7 +2995,9 @@ PyTypeObject RowType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                                     /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                                     /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 
@@ -2971,6 +3119,20 @@ static PyObject* RowList_item(PyObject* self, Py_ssize_t ix)
     return rowlist->rows[ix].row.python;
 }
 
+static PyObject* RowList_description_get(PyObject* self, void* closure)
+{
+    struct RowList* rowlist = (struct RowList*)self;
+    return ResultSetDescription_get_object(rowlist->description);
+
+    UNUSED(closure);
+}
+
+static PyGetSetDef RowList_getset[] = {
+    /* name, get, set, doc, closure */
+    { (char*)"description", RowList_description_get, NULL, (char*)s_Cursor_description_doc, NULL },
+    { NULL,                 NULL,                    NULL, NULL,                            NULL }
+};
+
 PyTypeObject* RowListType_init(void)
 {
     if (0 != PyType_Ready(&RowListType))
@@ -3027,7 +3189,7 @@ PyTypeObject RowListType = {
     NULL,                                     /* tp_iternext */
     NULL,                                     /* tp_methods */
     NULL,                                     /* tp_members */
-    NULL,                                     /* tp_getset */
+    RowList_getset,                           /* tp_getset */
     NULL,                                     /* tp_base */
     NULL,                                     /* tp_dict */
     NULL,                                     /* tp_descr_get */
@@ -3050,7 +3212,9 @@ PyTypeObject RowListType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                                     /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                                     /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 
@@ -3343,6 +3507,7 @@ static PyObject* Cursor_nextset(PyObject* self, PyObject* args)
     struct Cursor* cursor = (struct Cursor*)self;
     Cursor_verify_open(cursor);
     Cursor_verify_connection_open(cursor);
+    Cursor_clear_resultset(cursor);
 
     Py_BEGIN_ALLOW_THREADS
 
@@ -3616,7 +3781,9 @@ PyTypeObject CursorType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                         /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                         /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 

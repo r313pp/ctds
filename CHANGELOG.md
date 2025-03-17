@@ -4,6 +4,24 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [1.14.0] - 2021-03-25
+### Fixed
+- Replaced travis-ci with Github Actions.
+- Replaced custom Docker-based testing infrastructure with tox.
+- Fixed translation of SQL Server errors to Python exceptions for
+  all errors with severity > 10.
+  https://github.com/zillow/ctds/issues/84
+
+## [1.13.0] - 2020-11-12
+### Added
+- Offical support for Python 3.9.
+- Expose `ctds.Row` type so that it can be used as a type annotation.
+- Add `description` attribute to rowlists and rows.
+- Add `ctds.Row.dict()` method.
+
+### Fixed
+- Cache `cursor.description` rather than creating a new instance every time.
+
 ## [1.12.0] - 2020-03-07
 ### Fixed
 - Fixed Python -> SQL type conversion to consider client TDS version when
@@ -257,7 +275,9 @@ _NVARCHAR_ arguments to remote procedure calls.
 ## [1.0.0] - 2016-03-14
 Initial Release
 
-[Unreleased]: https://github.com/zillow/ctds/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/zillow/ctds/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/zillow/ctds/compare/v1.13.0...v1.14.0
+[1.13.0]: https://github.com/zillow/ctds/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/zillow/ctds/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/zillow/ctds/compare/v1.10.1...v1.11.0
 [1.10.1]: https://github.com/zillow/ctds/compare/v1.10.0...v1.10.1

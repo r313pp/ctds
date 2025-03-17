@@ -24,6 +24,14 @@
 #  endif /* ifndef __clang__ */
 #endif /* ifdef __GNUC__ */
 
+#ifdef __clang__
+# if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8
+/* Ignore "'tp_print' has been explicitly marked deprecated here" */
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#  endif /* if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION == 8 */
+#endif /* ifdef __clang__ */
+
 
 #define TDS_TYPE_SIZE_FIXED (-1)
 
@@ -243,7 +251,9 @@ PyTypeObject ParameterType = {
 #endif /* if PY_VERSION_HEX >= 0x03040000 */
 #if PY_VERSION_HEX >= 0x03080000
     NULL,                         /* tp_vectorcall */
+#  if PY_VERSION_HEX < 0x03090000
     NULL,                         /* tp_print */
+#  endif /* if PY_VERSION_HEX < 0x03090000 */
 #endif /* if PY_VERSION_HEX >= 0x03080000 */
 };
 
